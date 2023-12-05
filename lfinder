@@ -1,0 +1,171 @@
+#!/usr/bin/env python
+#
+#
+# $$\                                $$\       $$$$$$$$\ $$\                 $$\
+# $$ |                               $$ |      $$  _____|\__|                $$ |
+# $$ |      $$$$$$\   $$$$$$\   $$$$$$$ |      $$ |      $$\ $$$$$$$\   $$$$$$$ | $$$$$$\   $$$$$$\
+# $$ |     $$  __$$\  \____$$\ $$  __$$ |      $$$$$\    $$ |$$  __$$\ $$  __$$ |$$  __$$\ $$  __$$\
+# $$ |     $$$$$$$$ | $$$$$$$ |$$ /  $$ |      $$  __|   $$ |$$ |  $$ |$$ /  $$ |$$$$$$$$ |$$ |  \__|
+# $$ |     $$   ____|$$  __$$ |$$ |  $$ |      $$ |      $$ |$$ |  $$ |$$ |  $$ |$$   ____|$$ |
+# $$$$$$$$\\$$$$$$$\ \$$$$$$$ |\$$$$$$$ |      $$ |      $$ |$$ |  $$ |\$$$$$$$ |\$$$$$$$\ $$ |
+# \________|\_______| \_______| \_______|      \__|      \__|\__|  \__| \_______| \_______|\__| v1.0
+#
+#
+# OSINT tool to find business contact information from a search term.
+# Written by Brad Nelson (Squ1rr3l)
+
+
+import sys
+import csv
+import time
+from emailfinder.extractor import *
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver import Chrome
+from selenium.webdriver import ActionChains
+from selenium.webdriver.common.actions.wheel_input import ScrollOrigin
+from selenium.webdriver.common.keys import Keys
+import tldextract
+import urllib.parse
+
+# Search Google Maps for businesses fitting the search term
+def get_business_info(search_term):
+    business_info_list = []
+    
+    # Create a valid Google Maps URL with given search term
+    url = 'https://www.google.com/maps/search/' + search_term
+    
+    # Get Selenium running and get our Google Maps page
+    options = webdriver.ChromeOptions()
+    options.add_argument('--headless')
+    driver = Chrome(options=options)
+    driver.implicitly_wait(5)
+    driver.get(url)
+    print('Searching Google Maps for: ' + search_term + '...')
+    time.sleep(20)
+
+    # Scroll down to load all businesses
+    iframe = driver.find_element(By.CLASS_NAME, "IFMGgb")
+    
+    # This is a terrible way to say "Keep scrolling until you see the end of the list"
+    # There is probably a better way to do this.
+    while True:
+        try:
+            page_end = driver.find_element(By.CLASS_NAME, "HlvSq")
+        except:
+            scroll_origin = ScrollOrigin.from_element(iframe)
+            ActionChains(driver).scroll_from_origin(scroll_origin, 0, 5000000).perform()
+            continue
+        else:
+            break
+            time.sleep(10)
+    
+    # Find all sections with business info and scrape all the info
+    sections = driver.find_elements(By.CLASS_NAME, "OFBs3e")
+
+    b_names = []
+    b_phones = []
+    b_domains = []
+
+    for section in sections:
+        
+        names = section.find_elements(By.XPATH, ".//div[@class='qBF1Pd fontHeadlineSmall ']")
+        for name in names:
+            if len(name.text) > 1:
+                b_names.append(name.text)
+                print(name.text)
+            else:
+                b_names.append('NotFound')
+
+        phones = section.find_elements(By.XPATH, ".//span[@class='UsdlK']")
+        for phone in phones:
+            if len(phone.text) > 1:
+                b_phones.append(phone.text)
+                print(phone.text)
+            else:
+                b_phones.append('NotFound')
+
+        if section.find_elements(By.XPATH, ".//a[@data-value='Website']"):
+            print('Website found')
+            websites = section.find_elements(By.XPATH, ".//a[@data-value='Website']")
+            for website in websites:
+                web_string = str(website.get_attribute('href'))
+                print('Website found: ' + web_string)
+                if web_string == "":
+                    b_domains.append('NotFound')
+                else:
+                    #web_url = website.get_attribute("href")
+                    print(web_string)
+                    extracted_info = tldextract.extract(web_string)
+                    domain = extracted_info.domain + '.' + extracted_info.suffix
+                    b_domains.append(domain)
+                    print(domain)
+        else:
+            print('Website not found')
+            print('Moving on')
+            b_domains.append('Not Found')
+
+    # Combine business names, phone numbers, and websites
+    for b_name, b_phone, b_domain in zip(b_names, b_phones, b_domains):
+        
+        print('Searching for emails for ' + b_name)
+        emails = get_domain_emails(b_domain)
+        for email in emails:
+            print(email)
+
+        business_info_list.append({
+            'name': b_name.strip(),
+            'phone': b_phone.strip(),
+            'website': b_domain.strip(),
+            'emails': ', '.join(emails) if emails else 'N/A'
+        })
+
+        driver.quit()
+
+    return business_info_list
+
+# Find any emails related to the business's domain
+def get_domain_emails(domain):
+    try:
+        emails = get_emails_from_google(domain)   # Google will block you after just a handful of requests. I don't know how to stop Google from blocking this.
+        time.sleep(5)
+        return emails
+    except Exception as e:
+        print(f"Error fetching emails for {domain}: {e}")
+        return []
+
+# Save everything in a nice little CSV file
+def save_to_csv(file_path, business_info_list):
+    with open(file_path, 'w', newline='', encoding='utf-8') as csvfile:
+        fieldnames = ['Business Name', 'Phone Number', 'Website', 'Emails']
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for info in business_info_list:
+            writer.writerow({
+                'Business Name': info['name'],
+                'Phone Number': info['phone'],
+                'Website': info['website'],
+                'Emails': info['emails']
+            })
+
+if __name__ == "__main__":
+
+    # Parse them args
+    if len(sys.argv) != 3:
+        print("Usage: lfinder <search_term> <output_csv>")
+        sys.exit(1)
+
+    search_term = sys.argv[1]
+    output_csv = sys.argv[2]
+
+    business_info_list = get_business_info(search_term)
+
+    # Print out all the info gathered
+    print("\nBusiness Information:")
+    for i, info in enumerate(business_info_list, start=1):
+        print(f"{i}. {info['name']} - {info['phone']} - {info['website']} - {info['emails']}")
+
+    # Save everything to a CSV and print out CSV name
+    save_to_csv(output_csv, business_info_list)
+    print(f"\nBusiness information saved to {output_csv}")
+
